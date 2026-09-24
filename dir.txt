@@ -1,0 +1,4 @@
+FingerprintPay:
+  FingerprintPay-6.1.0.apk:1193142:1790050816:https://gh-proxy.org/https://github.com/eritpchy/FingerprintPay/releases/download/6.1.0-ci/xposed.com.surcumference.fingerprintpay.wechatfp.6.1.0.release.apk
+  README.md:https://gh-proxy.org/https://raw.github.com/eritpchy/FingerprintPay/main/README.md
+  跳转仓库:https://github.com/eritpchy/FingerprintPay
