@@ -1,0 +1,1 @@
+https://gh-proxy.org/https://raw.github.com/SukiSU-Ultra/SukiSU-Ultra/main/docs/zh/README.md

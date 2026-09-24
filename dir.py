@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-扫描目录，按目录聚合。
+扫描目录，按目录树缩进输出。
 
-格式:
+格式（缩进用两个空格）:
   FolderName:
-    [FileName:][FileSize:][Modified:]Url
+    SubFolder:
+      [FileName:][FileSize:][Modified:]Url
 
 规则（每个本地文件 = 一个 entry）:
 - FileName = 本地文件名
@@ -27,6 +28,9 @@ import fnmatch
 from email.utils import parsedate_to_datetime
 import urllib.request
 import urllib.error
+
+
+INDENT = "  "
 
 
 def log(msg):
@@ -88,13 +92,7 @@ def get_local_info(path):
 
 
 def is_excluded(rel_path, exclude_patterns):
-    """
-    判断相对路径（相对于扫描目录，使用 '/' 分隔）是否命中排除规则。
-    - 支持 glob 通配符（fnmatch 风格）
-    - 匹配是相对于扫描目录的完整路径；若某条规则匹配到该路径或其任一父目录，则视为排除。
-    """
     rel_path = rel_path.replace(os.sep, '/').strip('/')
-
     parts = rel_path.split('/')
     prefixes = ['/'.join(parts[:i]) for i in range(1, len(parts) + 1)]
 
@@ -107,10 +105,7 @@ def is_excluded(rel_path, exclude_patterns):
 
 
 def process_file(filepath):
-    """
-    处理单个本地文件，返回 entry = (filename, size, modified, url) 或 None。
-    filename 始终是本地文件名。
-    """
+    """返回 (filename, size, modified, url) 或 None。"""
     filename = os.path.basename(filepath)
 
     try:
@@ -162,12 +157,75 @@ def format_entry(filename, size, modified, url):
     if modified is not None:
         parts.append(str(modified) + ":")
     parts.append(url)
-    return "  " + "".join(parts)
+    return "".join(parts)
+
+
+def build_tree(scan_dir, exclude_patterns):
+    """
+    返回嵌套结构:
+      {'dirs': {name: node, ...}, 'files': [(filename, filepath), ...]}
+    """
+    root_node = {'dirs': {}, 'files': []}
+    skipped_count = 0
+    file_count = 0
+
+    for cur_root, dirs, filenames in os.walk(scan_dir):
+        rel_dir = os.path.relpath(cur_root, scan_dir)
+        if rel_dir == '.':
+            rel_dir = ''
+
+        kept_dirs = []
+        for d in sorted(dirs):
+            full = os.path.join(cur_root, d)
+            rel = os.path.relpath(full, scan_dir)
+            if is_excluded(rel, exclude_patterns):
+                log(f"[INFO] 排除目录: {rel}")
+                skipped_count += 1
+                continue
+            kept_dirs.append(d)
+        dirs[:] = kept_dirs
+
+        node = root_node
+        if rel_dir:
+            for part in rel_dir.split(os.sep):
+                node = node['dirs'].setdefault(part, {'dirs': {}, 'files': []})
+
+        for fn in sorted(filenames):
+            filepath = os.path.join(cur_root, fn)
+            rel_path = os.path.relpath(filepath, scan_dir)
+            if is_excluded(rel_path, exclude_patterns):
+                log(f"[INFO] 排除文件: {rel_path}")
+                skipped_count += 1
+                continue
+            node['files'].append((fn, filepath))
+            file_count += 1
+
+    return root_node, file_count, skipped_count
+
+
+def render_node(node, name, indent_level, out_lines):
+    """
+    渲染一个目录节点: 先 `名字:`，再文件 entries，再子目录。
+    """
+    prefix = INDENT * indent_level
+    out_lines.append(f"{prefix}{name}:")
+
+    child_prefix = INDENT * (indent_level + 1)
+
+    for fn, filepath in node['files']:
+        log(f"[INFO] 处理文件: {filepath}")
+        entry = process_file(filepath)
+        if entry:
+            filename, size, modified, url = entry
+            out_lines.append(child_prefix + format_entry(filename, size, modified, url))
+
+    for sub_name in sorted(node['dirs'].keys()):
+        render_node(node['dirs'][sub_name], sub_name, indent_level + 1, out_lines)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='扫描目录，按目录聚合输出。'
+        description='扫描目录，按目录树缩进输出（不含扫描根目录名）。'
     )
     parser.add_argument('scan_dir', help='要扫描的目录')
     parser.add_argument('output_file', nargs='?', default=None,
@@ -188,63 +246,25 @@ def main():
     if exclude_patterns:
         log(f"[INFO] 排除规则: {exclude_patterns}")
 
-    groups = {}
-    file_count = 0
-    skipped_count = 0
+    root_node, file_count, skipped_count = build_tree(scan_dir, exclude_patterns)
 
-    for root, dirs, filenames in os.walk(scan_dir):
-        kept_dirs = []
-        for d in sorted(dirs):
-            full = os.path.join(root, d)
-            rel = os.path.relpath(full, scan_dir)
-            if is_excluded(rel, exclude_patterns):
-                log(f"[INFO] 排除目录: {rel}")
-                skipped_count += 1
-                continue
-            kept_dirs.append(d)
-        dirs[:] = kept_dirs
+    log(f"[INFO] 共发现 {file_count} 个文件，排除 {skipped_count} 项")
 
-        for fn in sorted(filenames):
-            filepath = os.path.join(root, fn)
-            rel_path = os.path.relpath(filepath, scan_dir)
+    out_lines = []
 
-            if is_excluded(rel_path, exclude_patterns):
-                log(f"[INFO] 排除文件: {rel_path}")
-                skipped_count += 1
-                continue
+    # 根下的直接文件：顶格输出（不带目录头）
+    for fn, filepath in root_node['files']:
+        log(f"[INFO] 处理文件: {filepath}")
+        entry = process_file(filepath)
+        if entry:
+            filename, size, modified, url = entry
+            out_lines.append(format_entry(filename, size, modified, url))
 
-            rel_dir = os.path.relpath(root, scan_dir)
-            if rel_dir == '.':
-                rel_dir = ''
-            groups.setdefault(rel_dir, []).append(filepath)
-            file_count += 1
+    # 顶层子目录：从缩进 0 开始
+    for sub_name in sorted(root_node['dirs'].keys()):
+        render_node(root_node['dirs'][sub_name], sub_name, 0, out_lines)
 
-    log(f"[INFO] 共发现 {file_count} 个文件，{len(groups)} 个目录，排除 {skipped_count} 项")
-
-    if file_count == 0:
-        log("[WARN] 没有剩余文件")
-        sys.exit(0)
-
-    output_blocks = []
-    for rel_dir in sorted(groups.keys()):
-        entries = []
-        for filepath in groups[rel_dir]:
-            log(f"[INFO] 处理文件: {filepath}")
-            entry = process_file(filepath)
-            if entry:
-                entries.append(entry)
-
-        if not entries:
-            log(f"[WARN] 目录无有效条目: {rel_dir or '.'}")
-            continue
-
-        folder_name = rel_dir if rel_dir else os.path.basename(scan_dir)
-        lines = [f"{folder_name}:"]
-        for filename, size, modified, url in entries:
-            lines.append(format_entry(filename, size, modified, url))
-        output_blocks.append("\n".join(lines))
-
-    result = "\n\n".join(output_blocks)
+    result = "\n".join(out_lines)
 
     if args.output_file:
         try:
